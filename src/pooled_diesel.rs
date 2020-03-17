@@ -1,13 +1,15 @@
 use bb8::PooledConnection;
 use diesel::{
-    connection::{SimpleConnection, TransactionManager},
+    connection::{SimpleConnection, AnsiTransactionManager},
     ConnectionResult, QueryResult,
 };
 use diesel::{
     deserialize::QueryableByName,
     query_builder::{AsQuery, QueryFragment, QueryId},
     sql_types::HasSqlType,
+    backend::UsesAnsiSavepointSyntax,
     Queryable,
+    ConnectionError,
 };
 use std::ops::{Deref, DerefMut};
 
@@ -54,17 +56,17 @@ where
 impl<M> diesel::Connection for PooledDieselConnection<'_, M>
 where
     M: bb8::ManageConnection,
-    M::Connection: diesel::Connection,
-    <M::Connection as diesel::Connection>::TransactionManager:
-        TransactionManager<Self>,
+    M::Connection: diesel::Connection<TransactionManager = AnsiTransactionManager>,
+    <M::Connection as diesel::Connection>::Backend: UsesAnsiSavepointSyntax,
 {
     type Backend = <M::Connection as diesel::Connection>::Backend;
-    type TransactionManager =
-        <M::Connection as diesel::Connection>::TransactionManager;
+    type TransactionManager = AnsiTransactionManager;
 
     fn establish(_database_url: &str) -> ConnectionResult<Self> {
-        // Really not much else we can do here.
-        panic!("tried to establish pool connection outside of pool")
+        // This is taken from `diesel::r2d2`
+        Err(ConnectionError::BadConnection(String::from(
+            "Cannot directly establish a pooled connection",
+        )))
     }
 
     fn execute(&self, query: &str) -> QueryResult<usize> {
