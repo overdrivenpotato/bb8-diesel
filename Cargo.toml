@@ -1,0 +1,15 @@
+[package]
+name = "bb8-diesel"
+description = "bb8 connection manager for Diesel"
+version = "0.1.0"
+authors = ["Marko Mijalkovic <marko.mijalkovic97@gmail.com>"]
+edition = "2018"
+license = "MIT"
+repository = "https://github.com/overdrivenpotato/bb8-diesel"
+keywords = ["diesel", "r2d2", "pool", "tokio", "async"]
+
+[dependencies]
+bb8 = "0.4"
+async-trait = "0.1.24"
+diesel = { version = "1.4.3", default-features = false, features = [ "r2d2" ] }
+tokio = { version = "0.2", default-features = false, features = [ "blocking" ] }
