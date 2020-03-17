@@ -2,8 +2,11 @@ use async_trait::async_trait;
 use diesel::r2d2::{self, ManageConnection};
 use std::sync::{Arc, Mutex};
 
+mod pooled_diesel;
+
 pub use bb8;
 pub use diesel;
+pub use pooled_diesel::PooledDieselConnection;
 
 #[derive(Clone)]
 pub struct DieselConnectionManager<T> {
