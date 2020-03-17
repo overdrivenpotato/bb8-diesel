@@ -11,10 +11,17 @@ use diesel::{
     Queryable,
     ConnectionError,
 };
-use std::ops::{Deref, DerefMut};
+use std::{fmt::Debug, ops::{Deref, DerefMut}};
+use tokio::task;
 
 /// Utility wrapper to implement `Connection` and `SimpleConnection` on top of
 /// `PooledConnection`.
+///
+/// All blocking methods within this type delegate to `block_in_place`. The
+/// number of threads is not unbounded, however, as they are controlled by the
+/// truly asynchronous `bb8::Pool` owner. This type makes it easy to use diesel
+/// without fear of blocking the runtime and without fear of spawning too many
+/// child threads.
 ///
 /// Note that trying to construct this type via `Connection::establish` will
 /// panic. The only correct way to construct this type is via tuple constructor
@@ -49,7 +56,7 @@ where
     M::Connection: diesel::Connection,
 {
     fn batch_execute(&self, query: &str) -> QueryResult<()> {
-        self.0.batch_execute(query)
+        task::block_in_place(|| self.0.batch_execute(query))
     }
 }
 
@@ -69,8 +76,28 @@ where
         )))
     }
 
+    fn transaction<T, E, F>(&self, f: F) -> Result<T, E>
+    where
+        F: FnOnce() -> Result<T, E>,
+        E: From<diesel::result::Error>,
+    {
+        task::block_in_place(|| self.0.transaction(f))
+    }
+
+    fn begin_test_transaction(&self) -> QueryResult<()> {
+        task::block_in_place(|| self.0.begin_test_transaction())
+    }
+
+    fn test_transaction<T, E, F>(&self, f: F) -> T
+    where
+        F: FnOnce() -> Result<T, E>,
+        E: Debug,
+    {
+        task::block_in_place(|| self.0.test_transaction(f))
+    }
+
     fn execute(&self, query: &str) -> QueryResult<usize> {
-        self.0.execute(query)
+        task::block_in_place(|| self.0.execute(query))
     }
 
     fn query_by_index<T, U>(&self, source: T) -> QueryResult<Vec<U>>
@@ -80,7 +107,7 @@ where
         Self::Backend: HasSqlType<T::SqlType>,
         U: Queryable<T::SqlType, Self::Backend>,
     {
-        self.0.query_by_index(source)
+        task::block_in_place(|| self.0.query_by_index(source))
     }
 
     fn query_by_name<T, U>(&self, source: &T) -> QueryResult<Vec<U>>
@@ -88,14 +115,14 @@ where
         T: QueryFragment<Self::Backend> + QueryId,
         U: QueryableByName<Self::Backend>,
     {
-        self.0.query_by_name(source)
+        task::block_in_place(|| self.0.query_by_name(source))
     }
 
     fn execute_returning_count<T>(&self, source: &T) -> QueryResult<usize>
     where
         T: QueryFragment<Self::Backend> + QueryId,
     {
-        self.0.execute_returning_count(source)
+        task::block_in_place(|| self.0.execute_returning_count(source))
     }
 
     fn transaction_manager(&self) -> &Self::TransactionManager {
