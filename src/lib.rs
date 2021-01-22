@@ -43,6 +43,13 @@ impl<T: Send + 'static> DieselConnectionManager<T> {
             // Intentionally panic if the inner closure panics.
             .unwrap()
     }
+
+    async fn run_blocking_in_place<R, F>(&self, f: F) -> R
+    where
+        F: FnOnce(&r2d2::ConnectionManager<T>) -> R,
+    {
+        task::block_in_place(|| f(&*self.inner.lock().unwrap()))
+    }
 }
 
 #[async_trait]
@@ -61,11 +68,11 @@ where
 
     async fn is_valid(
         &self,
-        mut conn: Self::Connection,
-    ) -> Result<Self::Connection, Self::Error> {
-        self.run_blocking(|m| {
-            m.is_valid(&mut conn)?;
-            Ok(conn)
+        conn: &mut bb8::PooledConnection<'_, Self>,
+    ) -> Result<(), Self::Error> {
+        self.run_blocking_in_place(|m| {
+            m.is_valid(&mut *conn)?;
+            Ok(())
         })
         .await
     }
