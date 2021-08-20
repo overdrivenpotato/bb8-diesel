@@ -9,7 +9,11 @@ repository = "https://github.com/overdrivenpotato/bb8-diesel"
 keywords = ["diesel", "r2d2", "pool", "tokio", "async"]
 
 [dependencies]
-bb8 = "0.4"
+bb8 = "0.7"
 async-trait = "0.1.24"
-diesel = { version = "1.4.3", default-features = false, features = [ "r2d2" ] }
-tokio = { version = "0.2", default-features = false, features = [ "blocking", "rt-threaded" ] }
+diesel = { version = "1.4", default-features = false, features = [ "r2d2" ] }
+tokio = { version = "1.0", default-features = false, features = [ "rt-multi-thread" ] }
+
+[dev-dependencies]
+diesel = { version = "1.4", features = [ "postgres", "r2d2" ] }
+tokio = { version = "1.0", features = [ "macros"] }
