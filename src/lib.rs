@@ -1,9 +1,17 @@
+//! bb8-diesel allows the bb8 asynchronous connection pool
+//! to be used underneath Diesel.
+//!
+//! This is currently implemented against Diesel's synchronous
+//! API, with calls to [`tokio::task::spawn_blocking`] to safely
+//! perform synchronous operations from an asynchronous task.
+
 use async_trait::async_trait;
 use diesel::{
     backend::UsesAnsiSavepointSyntax,
     connection::{AnsiTransactionManager, SimpleConnection},
     deserialize::QueryableByName,
     query_builder::{AsQuery, QueryFragment, QueryId},
+    query_dsl::UpdateAndFetchResults,
     r2d2::{self, ManageConnection},
     sql_types::HasSqlType,
     ConnectionError, ConnectionResult, QueryResult, Queryable,
@@ -15,9 +23,37 @@ use std::{
 };
 use tokio::task;
 
-pub use bb8;
-pub use diesel;
-
+/// A connection manager which implements [`bb8::ManageConnection`] to
+/// integrate with bb8.
+///
+/// ```no_run
+/// #[macro_use]
+/// extern crate diesel;
+///
+/// use diesel::prelude::*;
+/// use diesel::pg::PgConnection;
+///
+/// table! {
+///     users (id) {
+///         id -> Integer,
+///     }
+/// }
+///
+/// #[tokio::main]
+/// async fn main() {
+///     use users::dsl;
+///
+///     // Creates a Diesel-specific connection manager for bb8.
+///     let mgr = bb8_diesel::DieselConnectionManager::<PgConnection>::new("localhost:1234");
+///     let pool = bb8::Pool::builder().build(mgr).await.unwrap();
+///     let conn = pool.get().await.unwrap();
+///
+///     diesel::insert_into(dsl::users)
+///         .values(dsl::id.eq(1337))
+///         .execute(&*conn)
+///         .unwrap();
+/// }
+/// ```
 #[derive(Clone)]
 pub struct DieselConnectionManager<T> {
     inner: Arc<Mutex<r2d2::ConnectionManager<T>>>,
@@ -26,9 +62,7 @@ pub struct DieselConnectionManager<T> {
 impl<T: Send + 'static> DieselConnectionManager<T> {
     pub fn new<S: Into<String>>(database_url: S) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(r2d2::ConnectionManager::new(
-                database_url,
-            ))),
+            inner: Arc::new(Mutex::new(r2d2::ConnectionManager::new(database_url))),
         }
     }
 
@@ -42,6 +76,13 @@ impl<T: Send + 'static> DieselConnectionManager<T> {
             .await
             // Intentionally panic if the inner closure panics.
             .unwrap()
+    }
+
+    async fn run_blocking_in_place<R, F>(&self, f: F) -> R
+    where
+        F: FnOnce(&r2d2::ConnectionManager<T>) -> R,
+    {
+        task::block_in_place(|| f(&*self.inner.lock().unwrap()))
     }
 }
 
@@ -61,11 +102,11 @@ where
 
     async fn is_valid(
         &self,
-        mut conn: Self::Connection,
-    ) -> Result<Self::Connection, Self::Error> {
-        self.run_blocking(|m| {
-            m.is_valid(&mut conn)?;
-            Ok(conn)
+        conn: &mut bb8::PooledConnection<'_, Self>,
+    ) -> Result<(), Self::Error> {
+        self.run_blocking_in_place(|m| {
+            m.is_valid(&mut *conn)?;
+            Ok(())
         })
         .await
     }
@@ -79,16 +120,20 @@ where
 }
 
 /// An async-safe analogue of any connection that implements
-/// `diesel::Connection`.
+/// [`diesel::Connection`].
 ///
-/// All blocking methods within this type delegate to `block_in_place`. The
-/// number of threads is not unbounded, however, as they are controlled by the
-/// truly asynchronous `bb8::Pool` owner. This type makes it easy to use diesel
-/// without fear of blocking the runtime and without fear of spawning too many
-/// child threads.
+/// These connections are created by [`DieselConnectionManager`].
 ///
-/// Note that trying to construct this type via `Connection::establish` will
-/// panic. The only correct way to construct this type is by using a bb8 pool.
+/// All blocking methods within this type delegate to
+/// [`tokio::task::block_in_place`]. The number of threads is not unbounded,
+/// however, as they are controlled by the truly asynchronous [`bb8::Pool`]
+/// owner.  This type makes it easy to use diesel without fear of blocking the
+/// runtime and without fear of spawning too many child threads.
+///
+/// Note that trying to construct this type via
+/// [`diesel::connection::Connection::establish`] will return an error.
+///
+/// The only correct way to construct this type is by using a bb8 pool.
 pub struct DieselConnection<C>(pub(crate) C);
 
 impl<C> Deref for DieselConnection<C> {
@@ -111,6 +156,17 @@ where
 {
     fn batch_execute(&self, query: &str) -> QueryResult<()> {
         task::block_in_place(|| self.0.batch_execute(query))
+    }
+}
+
+impl<Conn, Changes, Output> UpdateAndFetchResults<Changes, Output> for DieselConnection<Conn>
+where
+    Conn: UpdateAndFetchResults<Changes, Output>,
+    Conn: diesel::Connection<TransactionManager = AnsiTransactionManager>,
+    Conn::Backend: UsesAnsiSavepointSyntax,
+{
+    fn update_and_fetch(&self, changeset: Changes) -> QueryResult<Output> {
+        task::block_in_place(|| self.0.update_and_fetch(changeset))
     }
 }
 
