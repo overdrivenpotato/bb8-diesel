@@ -8,10 +8,14 @@
 use async_trait::async_trait;
 use diesel::{
     backend::UsesAnsiSavepointSyntax,
-    connection::{AnsiTransactionManager, SimpleConnection},
+    connection::{AnsiTransactionManager, Connection, SimpleConnection},
     deserialize::QueryableByName,
+    dsl::Limit,
     query_builder::{AsQuery, QueryFragment, QueryId},
-    query_dsl::UpdateAndFetchResults,
+    query_dsl::{
+        methods::{ExecuteDsl, LimitDsl, LoadQuery},
+        RunQueryDsl, UpdateAndFetchResults,
+    },
     r2d2::{self, ManageConnection},
     sql_types::HasSqlType,
     ConnectionError, ConnectionResult, QueryResult, Queryable,
@@ -89,7 +93,7 @@ impl<T: Send + 'static> DieselConnectionManager<T> {
 #[async_trait]
 impl<T> bb8::ManageConnection for DieselConnectionManager<T>
 where
-    T: diesel::Connection + Send + 'static,
+    T: Connection + Send + 'static,
 {
     type Connection = DieselConnection<T>;
     type Error = <r2d2::ConnectionManager<T> as r2d2::ManageConnection>::Error;
@@ -162,7 +166,7 @@ where
 impl<Conn, Changes, Output> UpdateAndFetchResults<Changes, Output> for DieselConnection<Conn>
 where
     Conn: UpdateAndFetchResults<Changes, Output>,
-    Conn: diesel::Connection<TransactionManager = AnsiTransactionManager>,
+    Conn: Connection<TransactionManager = AnsiTransactionManager>,
     Conn::Backend: UsesAnsiSavepointSyntax,
 {
     fn update_and_fetch(&self, changeset: Changes) -> QueryResult<Output> {
@@ -170,9 +174,9 @@ where
     }
 }
 
-impl<C> diesel::Connection for DieselConnection<C>
+impl<C> Connection for DieselConnection<C>
 where
-    C: diesel::Connection<TransactionManager = AnsiTransactionManager>,
+    C: Connection<TransactionManager = AnsiTransactionManager>,
     C::Backend: UsesAnsiSavepointSyntax,
 {
     type Backend = C::Backend;
@@ -239,5 +243,173 @@ where
 
     fn transaction_manager(&self) -> &Self::TransactionManager {
         &self.0.transaction_manager()
+    }
+}
+
+pub type AsyncResult<R> = Result<R, AsyncError>;
+
+// TODO
+pub enum AsyncError {
+    /// Failed to checkout a connection.
+    // TODO Populate
+    Checkout,
+
+    /// Query failure.
+    Error(diesel::result::Error),
+}
+
+#[async_trait]
+pub trait AsyncSimpleConnection<Conn>
+where
+    Conn: 'static + SimpleConnection,
+{
+    async fn batch_execute_async(&self, query: &str) -> AsyncResult<()>;
+}
+
+#[async_trait]
+impl<Conn> AsyncSimpleConnection<Conn> for bb8::Pool<DieselConnectionManager<Conn>>
+where
+    Conn: 'static + Connection,
+{
+    #[inline]
+    async fn batch_execute_async(&self, query: &str) -> AsyncResult<()> {
+        let self_ = self.clone();
+        let query = query.to_string();
+        let conn = self_.get_owned().await.map_err(|_| AsyncError::Checkout)?;
+        task::spawn_blocking(move || {
+            conn.batch_execute(&query).map_err(AsyncError::Error)
+        })
+        .await
+        .unwrap()
+    }
+}
+
+#[async_trait]
+pub trait AsyncConnection<Conn>: AsyncSimpleConnection<Conn>
+where
+    Conn: 'static + Connection,
+{
+    async fn run<R, Func>(&self, f: Func) -> AsyncResult<R>
+    where
+        R: Send + 'static,
+        Func: FnOnce(&Conn) -> QueryResult<R> + Send + 'static;
+
+    async fn transaction<R, Func>(&self, f: Func) -> AsyncResult<R>
+    where
+        R: Send + 'static,
+        Func: FnOnce(&Conn) -> QueryResult<R> + Send + 'static;
+}
+
+#[async_trait]
+impl<Conn> AsyncConnection<Conn> for bb8::Pool<DieselConnectionManager<Conn>>
+where
+    Conn: 'static + Connection,
+{
+    #[inline]
+    async fn run<R, Func>(&self, f: Func) -> AsyncResult<R>
+    where
+        R: Send + 'static,
+        Func: FnOnce(&Conn) -> QueryResult<R> + Send + 'static,
+    {
+        let self_ = self.clone();
+        let conn = self_.get_owned().await.map_err(|_| AsyncError::Checkout)?;
+        task::spawn_blocking(move || {
+            f(&*conn).map_err(AsyncError::Error)
+        })
+        .await
+        .unwrap() // Propagate panics
+    }
+
+    #[inline]
+    async fn transaction<R, Func>(&self, f: Func) -> AsyncResult<R>
+    where
+        R: Send + 'static,
+        Func: FnOnce(&Conn) -> QueryResult<R> + Send + 'static,
+    {
+        let self_ = self.clone();
+        let conn = self_.get_owned().await.map_err(|_| AsyncError::Checkout)?;
+        task::spawn_blocking(move || {
+            conn.transaction(|| f(&*conn)).map_err(AsyncError::Error)
+        })
+        .await
+        .unwrap() // Propagate panics
+    }
+}
+
+#[async_trait]
+pub trait AsyncRunQueryDsl<Conn, AsyncConn>
+where
+    Conn: 'static + Connection,
+{
+    async fn execute_async(self, asc: &AsyncConn) -> AsyncResult<usize>
+    where
+        Self: ExecuteDsl<Conn>;
+
+    async fn load_async<'a, U>(self, asc: &AsyncConn) -> AsyncResult<Vec<U>>
+    where
+        U: Send + 'static,
+        Self: LoadQuery<Conn, U>;
+
+    async fn get_result_async<U>(self, asc: &AsyncConn) -> AsyncResult<U>
+    where
+        U: Send + 'static,
+        Self: LoadQuery<Conn, U>;
+
+    async fn get_results_async<U>(self, asc: &AsyncConn) -> AsyncResult<Vec<U>>
+    where
+        U: Send + 'static,
+        Self: LoadQuery<Conn, U>;
+
+    async fn first_async<U>(self, asc: &AsyncConn) -> AsyncResult<U>
+    where
+        U: Send + 'static,
+        Self: LimitDsl,
+        Limit<Self>: LoadQuery<Conn, U>;
+}
+
+#[async_trait]
+impl<T, Conn> AsyncRunQueryDsl<Conn, bb8::Pool<DieselConnectionManager<Conn>>> for T
+where
+    T: Send + RunQueryDsl<Conn> + 'static,
+    Conn: 'static + Connection,
+{
+    async fn execute_async(self, asc: &bb8::Pool<DieselConnectionManager<Conn>>) -> AsyncResult<usize>
+    where
+        Self: ExecuteDsl<Conn>,
+    {
+        asc.run(|conn| self.execute(&*conn)).await
+    }
+
+    async fn load_async<'a, U>(self, asc: &bb8::Pool<DieselConnectionManager<Conn>>) -> AsyncResult<Vec<U>>
+    where
+        U: Send + 'static,
+        Self: LoadQuery<Conn, U>,
+    {
+        asc.run(|conn| self.load(&*conn)).await
+    }
+
+    async fn get_result_async<U>(self, asc: &bb8::Pool<DieselConnectionManager<Conn>>) -> AsyncResult<U>
+    where
+        U: Send + 'static,
+        Self: LoadQuery<Conn, U>,
+    {
+        asc.run(|conn| self.get_result(&*conn)).await
+    }
+
+    async fn get_results_async<U>(self, asc: &bb8::Pool<DieselConnectionManager<Conn>>) -> AsyncResult<Vec<U>>
+    where
+        U: Send + 'static,
+        Self: LoadQuery<Conn, U>,
+    {
+        asc.run(|conn| self.get_results(&*conn)).await
+    }
+
+    async fn first_async<U>(self, asc: &bb8::Pool<DieselConnectionManager<Conn>>) -> AsyncResult<U>
+    where
+        U: Send + 'static,
+        Self: LimitDsl,
+        Limit<Self>: LoadQuery<Conn, U>,
+    {
+        asc.run(|conn| self.first(&*conn)).await
     }
 }

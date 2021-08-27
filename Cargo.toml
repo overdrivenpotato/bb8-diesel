@@ -10,7 +10,7 @@ keywords = ["diesel", "r2d2", "pool", "tokio", "async"]
 
 [dependencies]
 bb8 = "0.7"
-async-trait = "0.1.24"
+async-trait = "0.1.51"
 diesel = { version = "1.4", default-features = false, features = [ "r2d2" ] }
 tokio = { version = "1.0", default-features = false, features = [ "rt-multi-thread" ] }
 
