@@ -1,8 +1,8 @@
 [package]
 name = "bb8-diesel"
 description = "bb8 connection manager for Diesel"
-version = "0.2.0"
-authors = ["Marko Mijalkovic <marko.mijalkovic97@gmail.com>"]
+version = "0.2.1"
+authors = ["Marko Mijalkovic <marko.mijalkovic97@gmail.com>", "Sean Klein <sean@oxide.computer>"]
 edition = "2018"
 license = "MIT"
 repository = "https://github.com/overdrivenpotato/bb8-diesel"
