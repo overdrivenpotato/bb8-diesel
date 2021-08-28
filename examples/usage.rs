@@ -20,6 +20,7 @@ pub struct User {
 
 #[tokio::main]
 async fn main() {
+/*
     use users::dsl;
 
     let manager = bb8_diesel::DieselConnectionManager::<PgConnection>::new("localhost:1234");
@@ -69,4 +70,5 @@ async fn main() {
         Ok(())
     })
     .unwrap();
+*/
 }
