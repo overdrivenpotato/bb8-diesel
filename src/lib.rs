@@ -7,14 +7,16 @@
 
 use async_trait::async_trait;
 use diesel::{
-    backend::UsesAnsiSavepointSyntax,
-    connection::{AnsiTransactionManager, SimpleConnection},
-    deserialize::QueryableByName,
-    query_builder::{AsQuery, QueryFragment, QueryId},
+    connection::{
+        AnsiTransactionManager, ConnectionGatWorkaround, LoadConnection, LoadRowIter,
+        SimpleConnection, TransactionManager,
+    },
+    expression::QueryMetadata,
+    query_builder::{Query, QueryFragment, QueryId},
     query_dsl::UpdateAndFetchResults,
     r2d2::{self, ManageConnection},
-    sql_types::HasSqlType,
-    ConnectionError, ConnectionResult, QueryResult, Queryable,
+    result::Error,
+    ConnectionError, ConnectionResult, QueryResult,
 };
 use std::{
     fmt::Debug,
@@ -89,7 +91,7 @@ impl<T: Send + 'static> DieselConnectionManager<T> {
 #[async_trait]
 impl<T> bb8::ManageConnection for DieselConnectionManager<T>
 where
-    T: diesel::Connection + Send + 'static,
+    T: diesel::Connection + Send + 'static + diesel::r2d2::R2D2Connection,
 {
     type Connection = DieselConnection<T>;
     type Error = <r2d2::ConnectionManager<T> as r2d2::ManageConnection>::Error;
@@ -100,9 +102,9 @@ where
             .map(DieselConnection)
     }
 
-    async fn is_valid(
-        &self,
-        conn: &mut bb8::PooledConnection<'_, Self>,
+    async fn is_valid<'life0, 'life1>(
+        &'life0 self,
+        conn: &'life1 mut Self::Connection,
     ) -> Result<(), Self::Error> {
         self.run_blocking_in_place(|m| {
             m.is_valid(&mut *conn)?;
@@ -154,26 +156,22 @@ impl<C> SimpleConnection for DieselConnection<C>
 where
     C: SimpleConnection,
 {
-    fn batch_execute(&self, query: &str) -> QueryResult<()> {
+    fn batch_execute(&mut self, query: &str) -> QueryResult<()> {
         task::block_in_place(|| self.0.batch_execute(query))
     }
 }
 
-impl<Conn, Changes, Output> UpdateAndFetchResults<Changes, Output> for DieselConnection<Conn>
+impl<'a, 'b, C> ConnectionGatWorkaround<'a, 'b, C::Backend> for DieselConnection<C>
 where
-    Conn: UpdateAndFetchResults<Changes, Output>,
-    Conn: diesel::Connection<TransactionManager = AnsiTransactionManager>,
-    Conn::Backend: UsesAnsiSavepointSyntax,
+    C: diesel::Connection<TransactionManager = AnsiTransactionManager>,
 {
-    fn update_and_fetch(&self, changeset: Changes) -> QueryResult<Output> {
-        task::block_in_place(|| self.0.update_and_fetch(changeset))
-    }
+    type Cursor = <C as ConnectionGatWorkaround<'a, 'b, C::Backend>>::Cursor;
+    type Row = <C as ConnectionGatWorkaround<'a, 'b, C::Backend>>::Row;
 }
 
 impl<C> diesel::Connection for DieselConnection<C>
 where
     C: diesel::Connection<TransactionManager = AnsiTransactionManager>,
-    C::Backend: UsesAnsiSavepointSyntax,
 {
     type Backend = C::Backend;
 
@@ -188,56 +186,71 @@ where
         )))
     }
 
-    fn transaction<T, E, F>(&self, f: F) -> Result<T, E>
+    fn transaction<T, E, F>(&mut self, f: F) -> Result<T, E>
     where
-        F: FnOnce() -> Result<T, E>,
+        F: FnOnce(&mut Self) -> Result<T, E>,
         E: From<diesel::result::Error>,
     {
-        task::block_in_place(|| self.0.transaction(f))
+        task::block_in_place(|| Self::TransactionManager::transaction(self, f))
     }
 
-    fn begin_test_transaction(&self) -> QueryResult<()> {
+    fn begin_test_transaction(&mut self) -> QueryResult<()> {
         task::block_in_place(|| self.0.begin_test_transaction())
     }
 
-    fn test_transaction<T, E, F>(&self, f: F) -> T
+    fn test_transaction<T, E, F>(&mut self, f: F) -> T
     where
-        F: FnOnce() -> Result<T, E>,
+        F: FnOnce(&mut Self) -> Result<T, E>,
         E: Debug,
     {
-        task::block_in_place(|| self.0.test_transaction(f))
+        // taken from the default impl of `test_transaction` (with `task::block_in_place` added)
+        let mut user_result = None;
+        let _ = task::block_in_place(|| {
+            self.transaction::<(), _, _>(|conn| {
+                user_result = f(conn).ok();
+                Err(Error::RollbackTransaction)
+            })
+        });
+        user_result.expect("Transaction did not succeed")
     }
 
-    fn execute(&self, query: &str) -> QueryResult<usize> {
-        task::block_in_place(|| self.0.execute(query))
-    }
-
-    fn query_by_index<T, U>(&self, source: T) -> QueryResult<Vec<U>>
-    where
-        T: AsQuery,
-        T::Query: QueryFragment<Self::Backend> + QueryId,
-        Self::Backend: HasSqlType<T::SqlType>,
-        U: Queryable<T::SqlType, Self::Backend>,
-    {
-        task::block_in_place(|| self.0.query_by_index(source))
-    }
-
-    fn query_by_name<T, U>(&self, source: &T) -> QueryResult<Vec<U>>
-    where
-        T: QueryFragment<Self::Backend> + QueryId,
-        U: QueryableByName<Self::Backend>,
-    {
-        task::block_in_place(|| self.0.query_by_name(source))
-    }
-
-    fn execute_returning_count<T>(&self, source: &T) -> QueryResult<usize>
+    fn execute_returning_count<T>(&mut self, source: &T) -> QueryResult<usize>
     where
         T: QueryFragment<Self::Backend> + QueryId,
     {
         task::block_in_place(|| self.0.execute_returning_count(source))
     }
 
-    fn transaction_manager(&self) -> &Self::TransactionManager {
-        &self.0.transaction_manager()
+    fn transaction_state(
+        &mut self,
+    ) -> &mut <Self::TransactionManager as TransactionManager<Self>>::TransactionStateData {
+        task::block_in_place(|| self.0.transaction_state())
+    }
+}
+
+impl<C> LoadConnection for DieselConnection<C>
+where
+    C: LoadConnection,
+    C: diesel::Connection<TransactionManager = AnsiTransactionManager>,
+{
+    fn load<'conn, 'query, T>(
+        &'conn mut self,
+        source: T,
+    ) -> QueryResult<LoadRowIter<'conn, 'query, Self, Self::Backend>>
+    where
+        T: Query + QueryFragment<Self::Backend> + QueryId + 'query,
+        Self::Backend: QueryMetadata<T::SqlType>,
+    {
+        task::block_in_place(|| self.0.load(source))
+    }
+}
+
+impl<Conn, Changes, Output> UpdateAndFetchResults<Changes, Output> for DieselConnection<Conn>
+where
+    Conn: diesel::Connection<TransactionManager = AnsiTransactionManager>,
+    Conn: UpdateAndFetchResults<Changes, Output>,
+{
+    fn update_and_fetch(&mut self, changeset: Changes) -> QueryResult<Output> {
+        task::block_in_place(|| self.0.update_and_fetch(changeset))
     }
 }
