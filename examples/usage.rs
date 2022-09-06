@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate diesel;
-
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 
@@ -11,8 +8,8 @@ table! {
     }
 }
 
-#[derive(AsChangeset, Identifiable, Queryable, PartialEq)]
-#[table_name = "users"]
+#[derive(AsChangeset, Identifiable, Queryable, Eq, PartialEq)]
+#[diesel(table_name = users)]
 pub struct User {
     pub id: i32,
     pub name: String,
@@ -24,22 +21,22 @@ async fn main() {
 
     let manager = bb8_diesel::DieselConnectionManager::<PgConnection>::new("localhost:1234");
     let pool = bb8::Pool::builder().build(manager).await.unwrap();
-    let conn = pool.get().await.unwrap();
+    let mut conn = pool.get().await.unwrap();
 
     // Insert
     let _ = diesel::insert_into(dsl::users)
         .values((dsl::id.eq(0), dsl::name.eq("Jim")))
-        .execute(&*conn)
+        .execute(&mut *conn)
         .unwrap();
 
     // Load
-    let _ = dsl::users.get_result::<User>(&*conn).unwrap();
+    let _ = dsl::users.load::<User>(&mut *conn).unwrap();
 
     // Update
     let _ = diesel::update(dsl::users)
         .filter(dsl::id.eq(0))
         .set(dsl::name.eq("Jim, But Different"))
-        .execute(&*conn)
+        .execute(&mut *conn)
         .unwrap();
 
     // Update via save_changes
@@ -47,24 +44,24 @@ async fn main() {
         id: 0,
         name: "Jim".to_string(),
     }
-    .save_changes::<User>(&*conn)
+    .save_changes::<User>(&mut *conn)
     .unwrap();
 
     // Delete
     let _ = diesel::delete(dsl::users)
         .filter(dsl::id.eq(0))
-        .execute(&*conn)
+        .execute(&mut *conn)
         .unwrap();
 
     // Transaction with multiple operations
-    conn.transaction::<_, diesel::result::Error, _>(|| {
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
         diesel::insert_into(dsl::users)
             .values((dsl::id.eq(0), dsl::name.eq("Jim")))
-            .execute(&*conn)
+            .execute(&mut *conn)
             .unwrap();
         diesel::insert_into(dsl::users)
             .values((dsl::id.eq(1), dsl::name.eq("Another Jim")))
-            .execute(&*conn)
+            .execute(&mut *conn)
             .unwrap();
         Ok(())
     })

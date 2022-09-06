@@ -3,17 +3,21 @@ name = "bb8-diesel"
 description = "bb8 connection manager for Diesel"
 version = "0.2.1"
 authors = ["Marko Mijalkovic <marko.mijalkovic97@gmail.com>", "Sean Klein <sean@oxide.computer>"]
-edition = "2018"
+edition = "2021"
 license = "MIT"
 repository = "https://github.com/overdrivenpotato/bb8-diesel"
 keywords = ["diesel", "r2d2", "pool", "tokio", "async"]
 
+[[example]]
+name = "usage"
+path = "examples/usage.rs"
+
 [dependencies]
-bb8 = "0.7"
+bb8 = "0.8"
 async-trait = "0.1.24"
-diesel = { version = "1.4", default-features = false, features = [ "r2d2" ] }
-tokio = { version = "1.0", default-features = false, features = [ "rt-multi-thread" ] }
+diesel = { version = "2.0", default-features = false, features = [ "r2d2", "i-implement-a-third-party-backend-and-opt-into-breaking-changes" ] }
+tokio = { version = "1.21", default-features = false, features = [ "rt-multi-thread" ] }
 
 [dev-dependencies]
-diesel = { version = "1.4", features = [ "postgres", "r2d2" ] }
-tokio = { version = "1.0", features = [ "macros"] }
+diesel = { version = "2.0", features = [ "postgres", "r2d2", "i-implement-a-third-party-backend-and-opt-into-breaking-changes" ] }
+tokio = { version = "1.21", features = [ "macros"] }
