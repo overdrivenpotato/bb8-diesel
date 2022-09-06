@@ -48,11 +48,11 @@ use tokio::task;
 ///     // Creates a Diesel-specific connection manager for bb8.
 ///     let mgr = bb8_diesel::DieselConnectionManager::<PgConnection>::new("localhost:1234");
 ///     let pool = bb8::Pool::builder().build(mgr).await.unwrap();
-///     let conn = pool.get().await.unwrap();
+///     let mut conn = pool.get().await.unwrap();
 ///
 ///     diesel::insert_into(dsl::users)
 ///         .values(dsl::id.eq(1337))
-///         .execute(&*conn)
+///         .execute(&mut *conn)
 ///         .unwrap();
 /// }
 /// ```

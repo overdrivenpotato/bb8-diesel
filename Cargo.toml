@@ -8,9 +8,9 @@ license = "MIT"
 repository = "https://github.com/overdrivenpotato/bb8-diesel"
 keywords = ["diesel", "r2d2", "pool", "tokio", "async"]
 
-[[example]]
-name = "usage"
-path = "examples/usage.rs"
+# [[example]]
+# name = "usage"
+# path = "examples/usage.rs"
 
 [dependencies]
 bb8 = "0.8"
