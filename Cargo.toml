@@ -1,7 +1,7 @@
 [package]
 name = "bb8-diesel"
 description = "bb8 connection manager for Diesel"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Marko Mijalkovic <marko.mijalkovic97@gmail.com>", "Sean Klein <sean@oxide.computer>"]
 edition = "2021"
 license = "MIT"

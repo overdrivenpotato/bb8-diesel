@@ -57,11 +57,11 @@ use tokio::task;
 /// }
 /// ```
 #[derive(Clone)]
-pub struct DieselConnectionManager<T> {
+pub struct DieselConnectionManager<T: diesel::Connection + Send + 'static + diesel::r2d2::R2D2Connection> {
     inner: Arc<Mutex<r2d2::ConnectionManager<T>>>,
 }
 
-impl<T: Send + 'static> DieselConnectionManager<T> {
+impl<T: diesel::Connection + Send + 'static + diesel::r2d2::R2D2Connection> DieselConnectionManager<T> {
     pub fn new<S: Into<String>>(database_url: S) -> Self {
         Self {
             inner: Arc::new(Mutex::new(r2d2::ConnectionManager::new(database_url))),
